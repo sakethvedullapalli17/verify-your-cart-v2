@@ -6,4 +6,4 @@
 // 3. Save this file.
 // ==============================================================================
 
-export const GEMINI_API_KEY = "PLACEHOLDER_API_KEY";
+export const GEMINI_API_KEY = "AIzaSyBR7_N3GczqROQJFiLdxKMk-h8PX0x0Elg";
