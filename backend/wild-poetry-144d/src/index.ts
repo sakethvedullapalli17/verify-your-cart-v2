@@ -1,60 +1,59 @@
 export default {
   async fetch(request: Request, env: any): Promise<Response> {
-    const corsHeaders = {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-    };
-
-    // Handle CORS preflight request
+    // CORS Fix
     if (request.method === "OPTIONS") {
       return new Response(null, {
-        status: 204,
-        headers: corsHeaders,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "POST, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type",
+        },
       });
     }
 
     if (request.method !== "POST") {
       return new Response("Backend working. Use POST request.", {
         status: 200,
-        headers: corsHeaders,
+        headers: { "Access-Control-Allow-Origin": "*" },
       });
     }
 
     try {
-      const { url } = await request.json();
+      const body = await request.json();
+      const url = body.url;
 
       if (!url) {
-        return new Response(JSON.stringify({ error: "Product URL missing" }), {
+        return new Response(JSON.stringify({ error: "Missing url" }), {
           status: 400,
           headers: {
-            ...corsHeaders,
             "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
           },
         });
       }
 
       const systemInstruction = `
-You are the TrustLens Forensic AI, an elite specialist in e-commerce fraud detection.
-You use linguistic footprinting, pricing forensics, and seller reputation grounding.
-Always respond with VALID JSON only.
+You are the TrustLens Forensic AI, an elite e-commerce fraud detection assistant.
+You must analyze product URLs and detect scams.
+Always return ONLY valid JSON.
 `;
 
       const prompt = `
-Perform a deep forensic scan on this product URL: ${url}
+Analyze this product URL: ${url}
 
-Steps:
-1. Grounding search (use web knowledge).
-2. Linguistic review analysis.
-3. Price realism check.
-4. Seller reputation & domain age.
-
-Return JSON ONLY:
+Return JSON only in this format:
 {
   "trust_score": number,
   "verdict": "Genuine" | "Suspicious" | "Fake",
-  "reasons": string[],
-  "advice": string
+  "reasons": ["reason1","reason2"],
+  "advice": "final advice",
+  "breakdown": {
+    "reviews": [],
+    "sentiment": [],
+    "price": [],
+    "seller": [],
+    "description": []
+  }
 }
 `;
 
@@ -76,30 +75,42 @@ Return JSON ONLY:
             generationConfig: {
               temperature: 0.1,
               topP: 0.9,
+              maxOutputTokens: 800,
             },
           }),
         }
       );
 
-      const data = await geminiResponse.json();
+      const result = await geminiResponse.json();
 
-      return new Response(JSON.stringify(data), {
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
-      });
-    } catch (err: any) {
-      return new Response(
-        JSON.stringify({ error: "Backend error", details: err.message }),
-        {
+      // Gemini text output
+      const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      if (!text) {
+        return new Response(JSON.stringify({ error: "Gemini returned empty response", raw: result }), {
           status: 500,
           headers: {
-            ...corsHeaders,
             "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
           },
-        }
-      );
+        });
+      }
+
+      return new Response(text, {
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
+      });
+
+    } catch (err: any) {
+      return new Response(JSON.stringify({ error: err.message || "Backend error" }), {
+        status: 500,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
+      });
     }
   },
 };
