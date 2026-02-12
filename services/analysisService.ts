@@ -8,16 +8,18 @@ import { mockAnalyzeProduct } from './mockAnalysisService';
  */
 export const analyzeProduct = async (url: string): Promise<AnalysisResult> => {
   // 1. Securely access API key from build environment
+  // We use the shimmed process.env.API_KEY. 
+  // If running in AI Studio, this might be injected dynamically, so we access it at runtime.
   const apiKey = process.env.API_KEY || "";
   
+  // If no key is found, throw specific error so UI can prompt user (AI Studio flow)
   if (!apiKey || apiKey === "PLACEHOLDER_API_KEY" || apiKey.trim() === "") {
-    console.warn("No API Key found. Using mock service.");
-    return await mockAnalyzeProduct(url);
+    throw new Error("API_KEY_MISSING");
   }
 
   const hostname = new URL(url).hostname;
 
-  // 2. System Instruction: Define the persona and rules
+  // 2. System Instruction
   const systemInstruction = `You are TrustLens AI, an elite e-commerce fraud detector.
   
   YOUR GOAL: Verify the legitimacy of a product URL by cross-referencing it with live search data.
@@ -29,9 +31,9 @@ export const analyzeProduct = async (url: string): Promise<AnalysisResult> => {
   4. SENTIMENT ANALYSIS: Analyze the phrasing of the title and description for bot-like patterns.
   
   OUTPUT FORMAT:
-  Return purely valid JSON. Do not include markdown formatting like \`\`\`json.`;
+  Return purely valid JSON.`;
 
-  // 3. Prompt: explicit context
+  // 3. Prompt
   const prompt = `Analyze this URL: ${url}
   
   Platform: ${hostname}
@@ -40,7 +42,7 @@ export const analyzeProduct = async (url: string): Promise<AnalysisResult> => {
   {
     "trust_score": number (0-100),
     "verdict": "Genuine" | "Suspicious" | "Fake",
-    "nlp_insights": ["Specific observation about text/grammar", "Observation about seller"],
+    "nlp_insights": ["Insight 1", "Insight 2"],
     "breakdown": {
       "reviews": ["Insight about reviews"],
       "sentiment": ["Insight about sentiment"],
@@ -48,46 +50,23 @@ export const analyzeProduct = async (url: string): Promise<AnalysisResult> => {
       "seller": ["Insight about seller identity"],
       "description": ["Insight about product description"]
     },
-    "reasons": ["Major reason 1", "Major reason 2", "Major reason 3"],
-    "advice": "Clear, actionable advice for the buyer."
+    "reasons": ["Reason 1", "Reason 2"],
+    "advice": "Actionable advice."
   }`;
 
   const config = {
     responseMimeType: "application/json",
-    // Schema helps guide the model, though search tools sometimes override strict JSON mode
-    responseSchema: {
-      type: Type.OBJECT,
-      properties: {
-        trust_score: { type: Type.NUMBER },
-        verdict: { type: Type.STRING },
-        nlp_insights: { type: Type.ARRAY, items: { type: Type.STRING } },
-        breakdown: {
-          type: Type.OBJECT,
-          properties: {
-            reviews: { type: Type.ARRAY, items: { type: Type.STRING } },
-            sentiment: { type: Type.ARRAY, items: { type: Type.STRING } },
-            price: { type: Type.ARRAY, items: { type: Type.STRING } },
-            seller: { type: Type.ARRAY, items: { type: Type.STRING } },
-            description: { type: Type.ARRAY, items: { type: Type.STRING } }
-          },
-          required: ["reviews", "sentiment", "price", "seller", "description"]
-        },
-        reasons: { type: Type.ARRAY, items: { type: Type.STRING } },
-        advice: { type: Type.STRING }
-      },
-      required: ["trust_score", "verdict", "breakdown", "reasons", "advice", "nlp_insights"]
-    },
     safetySettings: [
       { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH }
     ],
-    // Enable Search Tool for grounding (Real-time data)
+    // Enable Search Tool for grounding
     tools: [{ googleSearch: {} }] 
   };
 
   try {
+    // Create new instance per request to ensure latest key is used
     const ai = new GoogleGenAI({ apiKey });
     
-    // Using gemini-3-flash-preview for speed + search capabilities
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: prompt,
@@ -98,17 +77,18 @@ export const analyzeProduct = async (url: string): Promise<AnalysisResult> => {
         throw new Error("Empty response from Gemini");
     }
 
-    // Clean up response if model adds markdown blocks
-    let jsonStr = response.text.trim();
-    if (jsonStr.startsWith("```json")) {
-        jsonStr = jsonStr.replace(/^```json\n/, "").replace(/\n```$/, "");
-    } else if (jsonStr.startsWith("```")) {
-        jsonStr = jsonStr.replace(/^```\n/, "").replace(/\n```$/, "");
+    // Robust JSON Extraction (Fixes "Mock Mode" issues caused by Markdown wrapping)
+    let jsonStr = response.text;
+    const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+        jsonStr = jsonMatch[0];
+    } else {
+        throw new Error("Invalid JSON format received");
     }
 
     const data = JSON.parse(jsonStr);
     
-    // Extract Grounding Metadata (Sources found by Google Search)
+    // Extract Grounding Metadata
     const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks
       ?.map((c: any) => c.web?.uri)
       .filter((uri: string) => uri) || [];
@@ -121,13 +101,19 @@ export const analyzeProduct = async (url: string): Promise<AnalysisResult> => {
       advice: data.advice ?? "Proceed with caution.",
       url: url,
       timestamp: new Date().toISOString(),
-      sources: sources, // Pass search sources to UI
+      sources: sources,
       breakdown: data.breakdown
     };
 
-  } catch (error) {
+  } catch (error: any) {
     console.error("Gemini API Error:", error);
-    // Graceful fallback if API fails
+    // Propagate the error if it's key-related so UI handles it. 
+    // Otherwise fallback to mock.
+    if (error.message === "API_KEY_MISSING") {
+        throw error;
+    }
+    // For other errors (network, parsing), we unfortunately fall back to mock 
+    // to keep the app usable, but log it.
     return await mockAnalyzeProduct(url);
   }
 };

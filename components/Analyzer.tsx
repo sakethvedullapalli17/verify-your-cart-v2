@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { AlertTriangle, CheckCircle, ShieldCheck, Shield, Zap, Lock, Globe, Database, Lightbulb, Sparkles, Star, BrainCircuit, DollarSign, Store, FileText, ExternalLink, Info, Key, MessageSquareText } from 'lucide-react';
 import { AnalysisResult } from '../types';
 import { analyzeProduct } from '../services/analysisService';
+import { mockAnalyzeProduct } from '../services/mockAnalysisService';
 import { ScoreGauge } from './ScoreGauge';
 import { BrandLogo } from './BrandLogo';
 
@@ -14,6 +15,19 @@ export const Analyzer: React.FC = () => {
   
   const resultRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Check for AI Studio environment on mount
+  useEffect(() => {
+    const checkKey = async () => {
+        if ((window as any).aistudio?.hasSelectedApiKey) {
+            const hasKey = await (window as any).aistudio.hasSelectedApiKey();
+            if (!hasKey) {
+                setNeedsKey(true);
+            }
+        }
+    };
+    checkKey();
+  }, []);
 
   useEffect(() => {
     if (result && !loading && resultRef.current) {
@@ -30,9 +44,15 @@ export const Analyzer: React.FC = () => {
 
   const handleSelectKey = async () => {
     if ((window as any).aistudio?.openSelectKey) {
-      await (window as any).aistudio.openSelectKey();
-      setNeedsKey(false);
-      setError('');
+      try {
+        await (window as any).aistudio.openSelectKey();
+        setNeedsKey(false);
+        setError('');
+        // Auto-retry analysis if URL is present
+        if (url) handleAnalyze(new Event('submit') as any);
+      } catch (e) {
+        console.error("Key selection failed", e);
+      }
     }
   };
 
@@ -59,11 +79,26 @@ export const Analyzer: React.FC = () => {
       setResult(data);
     } catch (err: any) {
       const errMsg = err?.message || '';
-      if (errMsg.includes('permission') || errMsg.includes('key')) {
-        setNeedsKey(true);
-        setError('Permission denied. A paid API key might be required for this model.');
+      
+      // Handle Missing Key Flow
+      if (errMsg === 'API_KEY_MISSING' || errMsg.includes('key')) {
+        // If in AI Studio, prompt for key
+        if ((window as any).aistudio) {
+            setNeedsKey(true);
+            setError('Please select a Google Cloud Project to proceed.');
+            await handleSelectKey();
+        } else {
+            // If on web/localhost without key, show error and use mock
+            setError('API Key missing in deployment. Falling back to Demo Mode.');
+            const mockData = await mockAnalyzeProduct(processedUrl);
+            setResult(mockData);
+        }
       } else {
-        setError('Analysis failed. Please check your connection and try again.');
+        // Genuine Error (Network/Parsing)
+        console.warn("Falling back to mock due to error:", err);
+        setError('Live analysis failed. Showing demo results based on patterns.');
+        const mockData = await mockAnalyzeProduct(processedUrl);
+        setResult(mockData);
       }
     } finally {
       setLoading(false);
@@ -162,13 +197,13 @@ export const Analyzer: React.FC = () => {
               <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-center justify-between animate-fade-in relative z-20">
                 <div className="flex items-center gap-3 text-amber-800 text-sm font-medium">
                   <Key size={18} />
-                  <span>Connect your AI Studio key.</span>
+                  <span>Connect your AI Studio key to enable live analysis.</span>
                 </div>
                 <button 
                   onClick={handleSelectKey}
                   className="px-4 py-1.5 bg-amber-600 text-white text-xs font-bold rounded-lg hover:bg-amber-700 transition-colors"
                 >
-                  Setup Key
+                  Connect Key
                 </button>
               </div>
             )}
